@@ -1,174 +1,182 @@
+import json
+from pathlib import Path
+
 import pandas as pd
-import plotly.graph_objects as go
 import streamlit as st
-from sklearn.linear_model import LogisticRegression
-from sklearn.preprocessing import StandardScaler
-from sklearn.tree import DecisionTreeClassifier
 
-DATA_URL = (
-    "https://raw.githubusercontent.com/greatsong/modudata/"
-    "bb860932644270ad1199f10d3e7670e30231bce4/data/kobis_movies.csv"
-)
-START, END = "2025-09-01", "2026-07-31"
-NUM_COLS = ["first_scrn", "first_show", "peak"]
-THRESHOLDS = {"50만 명": 500_000, "100만 명": 1_000_000, "300만 명": 3_000_000}
-COLOR_SUCCESS = "#E4572E"
-COLOR_FAIL = "#4A6FA5"
+# ---------------------------------------------------------------
+# 기본 설정 (브라우저 탭 제목과 아이콘)
+# ---------------------------------------------------------------
+APP_TITLE = "뇌졸중 예측 실습실"
+APP_ICON = "🧠"
 
-st.set_page_config(page_title="흥행 분류기", page_icon="🎬", layout="wide")
+st.set_page_config(page_title=APP_TITLE, page_icon=APP_ICON, layout="wide")
+
+DATA_URL = "https://raw.githubusercontent.com/greatsong/modudata/main/data/stroke.csv"
+SAVE_DIR = Path(__file__).parent / "내_기록"
+SAVE_FILE = SAVE_DIR / "소개_화면_기록.json"
 
 
-@st.cache_data(show_spinner="데이터를 불러오는 중...")
-def load_data() -> pd.DataFrame:
-    df = pd.read_csv(DATA_URL, encoding="utf-8")
-    opened = pd.to_datetime(df["openDt"].astype(str), format="%Y%m%d", errors="coerce")
-    df = df[(opened >= START) & (opened <= END)].copy()
-    df["genre"] = df["genre"].fillna("")
-    df["nation"] = df["nation"].fillna("")
-    return df.sort_values("movieCd").reset_index(drop=True)
+# ---------------------------------------------------------------
+# 기록 불러오기 / 저장하기
+# ---------------------------------------------------------------
+def load_notes() -> dict:
+    """내_기록 폴더의 json 파일에서 우리말 뜻과 출처를 불러온다."""
+    if SAVE_FILE.exists():
+        try:
+            data = json.loads(SAVE_FILE.read_text(encoding="utf-8"))
+            return {
+                "meanings": dict(data.get("meanings", {})),
+                "source": str(data.get("source", "")),
+            }
+        except (json.JSONDecodeError, OSError):
+            pass
+    return {"meanings": {}, "source": ""}
 
 
-def split_genres(text: str) -> list[str]:
-    return [g.strip() for g in text.split("|") if g.strip()]
-
-
-def make_features(d: pd.DataFrame, genres: list[str], nations: list[str]):
-    """숫자 열, 장르(여러 개 가능), 국적을 학습용에서 정한 목록 기준으로 숫자로 바꾼다."""
-    num = d[NUM_COLS].astype(float).reset_index(drop=True)
-    genre_sets = d["genre"].apply(split_genres).reset_index(drop=True)
-    gen = pd.DataFrame({f"장르_{g}": genre_sets.apply(lambda s, g=g: int(g in s)) for g in genres})
-    nat = pd.DataFrame(
-        {f"국적_{n}": (d["nation"].reset_index(drop=True) == n).astype(int) for n in nations}
+def save_notes(notes: dict) -> None:
+    SAVE_DIR.mkdir(parents=True, exist_ok=True)
+    SAVE_FILE.write_text(
+        json.dumps(notes, ensure_ascii=False, indent=2), encoding="utf-8"
     )
-    return num, pd.concat([gen, nat], axis=1)
 
 
-# ---------------------------------------------------------------- 화면 머리말
-st.title("🎬 흥행 분류기")
-st.warning(
-    "이 앱의 정확도는 **이미 기록된 자료로 해 본 분류 연습**의 결과입니다. "
-    "**개봉 전에 흥행을 맞히는 예측 성능이 아닙니다.**"
+# ---------------------------------------------------------------
+# 데이터 불러오기
+# ---------------------------------------------------------------
+@st.cache_data(show_spinner="데이터를 불러오는 중이에요...")
+def load_data() -> pd.DataFrame:
+    return pd.read_csv(DATA_URL, encoding="utf-8")
+
+
+def describe_values(series: pd.Series, total_rows: int) -> str:
+    """열의 '값의 종류'를 짧은 글로 설명한다."""
+    values = series.dropna()
+    n_unique = values.nunique()
+    if n_unique == total_rows:
+        return f"겹치지 않는 번호 ({n_unique:,}개)"
+    if n_unique <= 10:
+        shown = ", ".join(str(v) for v in sorted(values.unique(), key=str))
+        return f"{n_unique}가지: {shown}"
+    if pd.api.types.is_numeric_dtype(series):
+        return f"숫자 (최소 {values.min():g} ~ 최대 {values.max():g})"
+    return f"{n_unique}가지 글자 값"
+
+
+# ---------------------------------------------------------------
+# 스타일 (따뜻한 색감의 큰 숫자 카드)
+# ---------------------------------------------------------------
+st.markdown(
+    """
+    <style>
+    .stat-card {
+        background: linear-gradient(135deg, #FFF3E0 0%, #FFE0B2 100%);
+        border: 1px solid #FFCC80;
+        border-radius: 16px;
+        padding: 22px 12px;
+        text-align: center;
+        box-shadow: 0 2px 6px rgba(191, 120, 40, 0.15);
+    }
+    .stat-label { font-size: 1.0rem; color: #8D5A1F; margin-bottom: 6px; }
+    .stat-value { font-size: 2.8rem; font-weight: 800; color: #BF360C; line-height: 1.1; }
+    </style>
+    """,
+    unsafe_allow_html=True,
 )
+
+
+def stat_card(label: str, value: str) -> str:
+    return (
+        f'<div class="stat-card"><div class="stat-label">{label}</div>'
+        f'<div class="stat-value">{value}</div></div>'
+    )
+
+
+# ---------------------------------------------------------------
+# 화면 맨 위: 아이콘 + 제목
+# ---------------------------------------------------------------
+st.title(f"{APP_ICON} {APP_TITLE}")
+st.caption("뇌졸중 데이터가 어떤 데이터인지 먼저 살펴보는 소개 화면이에요.")
 
 try:
-    data = load_data()
-except Exception as e:  # 네트워크 오류 등
-    st.error(f"데이터를 불러오지 못했습니다: {e}")
+    df = load_data()
+except Exception as error:  # 인터넷 연결 문제 등
+    st.error(f"데이터를 불러오지 못했어요. 인터넷 연결을 확인해 주세요.\n\n({error})")
     st.stop()
 
-with st.sidebar:
-    st.header("설정")
-    label_name = st.radio("성공 기준 (총관객수)", list(THRESHOLDS.keys()), index=1)
-    threshold = THRESHOLDS[label_name]
-    st.caption(f"total_audi가 {label_name} 이상이면 '성공', 미만이면 '기준 미달'입니다.")
-    st.markdown("**입력 변수**: first_scrn, first_show, peak, genre, nation")
-    st.caption(
-        "first_scrn·first_show는 개봉일이 아니라 **10위권에 처음 관측된 날**의 집계입니다. "
-        "first_week_audi, total_audi, days_in_top10은 입력에서 제외했습니다."
-    )
+notes = load_notes()
 
-# ---------------------------------------------------------------- 자료 나누기
-data["label"] = (data["total_audi"] >= threshold).astype(int)
-data["actual"] = data["label"].map({1: "성공", 0: "기준 미달"})
+# ---------------------------------------------------------------
+# 1) 큰 숫자 카드 네 개
+# ---------------------------------------------------------------
+total_people = len(df)
+total_columns = df.shape[1]
+stroke_count = int((df["stroke"] == 1).sum())
+stroke_ratio = stroke_count / total_people * 100
 
-# 영화 코드 순으로 정렬된 상태에서 열 편 중 앞 세 편을 시험용으로 고정
-is_test = (data.index % 10) < 3
-train, test = data[~is_test].copy(), data[is_test].copy()
-
-st.subheader("자료 나누기")
-c1, c2, c3 = st.columns(3)
-c1.metric("분석 대상 영화", f"{len(data)}편")
-c2.metric("학습용", f"{len(train)}편")
-c3.metric("시험용", f"{len(test)}편")
-st.caption(
-    f"2025년 9월~2026년 7월 개봉작을 영화 코드 순으로 놓고, 열 편 중 앞 세 편을 시험용으로 고정했습니다. "
-    f"성공 {int(data['label'].sum())}편 · 기준 미달 {int((1 - data['label']).sum())}편 (기준 {label_name})."
+c1, c2, c3, c4 = st.columns(4)
+c1.markdown(stat_card("전체 사람 수", f"{total_people:,}명"), unsafe_allow_html=True)
+c2.markdown(stat_card("열 개수", f"{total_columns}개"), unsafe_allow_html=True)
+c3.markdown(
+    stat_card("stroke가 1인 사람 수", f"{stroke_count:,}명"), unsafe_allow_html=True
+)
+c4.markdown(
+    stat_card("stroke가 1인 비율", f"{stroke_ratio:.2f}%"), unsafe_allow_html=True
 )
 
-if train["label"].nunique() < 2:
-    st.error("학습용 자료에 한쪽 범주만 있어 모델을 학습할 수 없습니다. 다른 기준을 골라 주세요.")
-    st.stop()
+# ---------------------------------------------------------------
+# 2) 열 설명 표 (우리말 뜻 칸은 직접 입력)
+# ---------------------------------------------------------------
+st.subheader("📋 열 설명 표")
+st.caption("‘우리말 뜻’ 칸을 더블클릭해서 교재를 보고 직접 적어 보세요. 적은 내용은 자동으로 저장돼요.")
 
-# ---------------------------------------------------------------- 학습·표준화 (학습용으로만)
-genres = sorted({g for s in train["genre"] for g in split_genres(s)})
-nations = sorted(train["nation"].unique())
-
-train_num, train_cat = make_features(train, genres, nations)
-test_num, test_cat = make_features(test, genres, nations)
-
-scaler = StandardScaler().fit(train_num)  # 평균·표준편차는 학습용에서만 계산
-X_train = pd.concat([pd.DataFrame(scaler.transform(train_num), columns=NUM_COLS), train_cat], axis=1)
-X_test = pd.concat([pd.DataFrame(scaler.transform(test_num), columns=NUM_COLS), test_cat], axis=1)
-y_train, y_test = train["label"].to_numpy(), test["label"].to_numpy()
-
-logit = LogisticRegression(max_iter=1000).fit(X_train, y_train)
-tree = DecisionTreeClassifier(max_depth=3, random_state=0).fit(X_train, y_train)
-
-test["prob"] = logit.predict_proba(X_test)[:, 1]
-test["pred"] = (test["prob"] >= 0.5).astype(int)
-test["pred_name"] = test["pred"].map({1: "성공", 0: "기준 미달"})
-
-acc_logit = float((logit.predict(X_test) == y_test).mean())
-acc_tree = float((tree.predict(X_test) == y_test).mean())
-majority = max(y_test.mean(), 1 - y_test.mean())
-
-# ---------------------------------------------------------------- 정확도
-st.subheader("시험용 자료 정확도")
-a1, a2 = st.columns(2)
-a1.metric("로지스틱 회귀", f"{acc_logit:.1%}")
-a2.metric("결정 트리 (깊이 3)", f"{acc_tree:.1%}")
-st.caption(
-    f"두 모델 모두 같은 시험용 {len(test)}편으로 계산했습니다. "
-    f"참고: 모두 '많은 쪽 범주'로만 답해도 {majority:.1%}가 나오므로, 정확도는 이 값과 비교해서 읽어야 합니다."
+table = pd.DataFrame(
+    {
+        "열 이름": df.columns,
+        "우리말 뜻": [notes["meanings"].get(col, "") for col in df.columns],
+        "값의 종류": [describe_values(df[col], total_people) for col in df.columns],
+        "빈 값 개수": [int(df[col].isna().sum()) for col in df.columns],
+    }
 )
 
-# ---------------------------------------------------------------- 영화 하나 보기
-st.subheader("시험용 영화 하나 살펴보기")
-pick = st.selectbox("시험용 영화", test["movieNm"].tolist())
-row = test[test["movieNm"] == pick].iloc[0]
-
-r1, r2, r3 = st.columns(3)
-r1.metric("추정 확률 (성공)", f"{row['prob']:.3f}")
-r2.metric("예측 범주 (확률 0.5 이상이면 성공)", row["pred_name"])
-r3.metric("실제 라벨", row["actual"])
-st.caption(
-    f"{pick} · 장르 {row['genre']} · 국적 {row['nation']} · "
-    f"first_scrn {int(row['first_scrn'])} · first_show {int(row['first_show'])} · peak {int(row['peak'])}"
+edited = st.data_editor(
+    table,
+    key="column_table",
+    hide_index=True,
+    use_container_width=True,
+    disabled=["열 이름", "값의 종류", "빈 값 개수"],
+    column_config={
+        "우리말 뜻": st.column_config.TextColumn("우리말 뜻", help="직접 적어 넣는 칸"),
+    },
 )
 
-# ---------------------------------------------------------------- 막대그래프
-st.subheader("시험용 영화의 성공 추정 확률")
-ordered = test.sort_values("prob", ascending=False)
+new_meanings = {
+    row["열 이름"]: str(row["우리말 뜻"] or "") for _, row in edited.iterrows()
+}
+if new_meanings != notes["meanings"]:
+    notes["meanings"] = new_meanings
+    save_notes(notes)
 
-fig = go.Figure()
-for name, color in [("성공", COLOR_SUCCESS), ("기준 미달", COLOR_FAIL)]:
-    part = ordered[ordered["actual"] == name]
-    fig.add_bar(
-        x=part["movieNm"],
-        y=part["prob"],
-        name=f"실제 {name}",
-        marker_color=color,
-        hovertemplate="%{x}<br>추정 확률 %{y:.3f}<extra></extra>",
-    )
-fig.add_hline(
-    y=0.5,
-    line_dash="dash",
-    line_color="#444444",
-    annotation_text="문턱값 0.5",
-    annotation_position="top right",
+# ---------------------------------------------------------------
+# 3) 데이터 처음 다섯 줄
+# ---------------------------------------------------------------
+st.subheader("👀 데이터 처음 다섯 줄")
+st.dataframe(df.head(5), use_container_width=True, hide_index=True)
+
+# ---------------------------------------------------------------
+# 4) 데이터 출처 (직접 입력)
+# ---------------------------------------------------------------
+st.subheader("📚 데이터 출처")
+st.caption("교재에 나온 출처 글을 아래에 적어 주세요. 입력 칸 밖을 클릭하면 저장돼요.")
+
+source_text = st.text_area(
+    "데이터 출처",
+    value=notes["source"],
+    height=120,
+    placeholder="여기에 교재에 적힌 데이터 출처를 적어 주세요.",
+    label_visibility="collapsed",
+    key="source_text",
 )
-fig.update_xaxes(
-    categoryorder="array",
-    categoryarray=ordered["movieNm"].tolist(),
-    tickangle=-45,
-    title_text="영화 (추정 확률이 높은 순)",
-)
-fig.update_yaxes(range=[0, 1.05], title_text="성공 추정 확률")
-fig.update_layout(
-    barmode="overlay",
-    height=560,
-    margin=dict(b=140),
-    legend=dict(orientation="h", y=1.08, x=0),
-)
-st.plotly_chart(fig, width="stretch")
-st.caption("막대 색은 실제 라벨입니다. 점선(0.5) 위쪽 막대는 성공으로 분류된 영화입니다.")
+if source_text != notes["source"]:
+    notes["source"] = source_text
+    save_notes(notes)
