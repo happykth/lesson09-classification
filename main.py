@@ -12,7 +12,7 @@ APP_ICON = "🧠"
 
 st.set_page_config(page_title=APP_TITLE, page_icon=APP_ICON, layout="wide")
 
-DATA_URL = "https://raw.githubusercontent.com/greatsong/modudata/main/data/stroke.csv"
+DATA_URL = "https://raw.githubusercontent.com/happykth/data/refs/heads/main/stroke.csv"
 SAVE_DIR = Path(__file__).parent / "내_기록"
 SAVE_FILE = SAVE_DIR / "소개_화면_기록.json"
 
